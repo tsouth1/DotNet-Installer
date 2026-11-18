@@ -8,8 +8,12 @@ A PowerShell GUI that installs or upgrades Microsoft .NET 6, 8, 9 and 10 package
 
 | File | Purpose |
 | --- | --- |
-| `Install-DotNetWinget.ps1` | The installer: a Windows Forms GUI, or a headless mode for unattended installs. |
+| `Install-DotNetWinget.ps1` | The original installer: a Windows Forms GUI, or a headless mode for unattended installs. It can install .NET 6, 8, 9 and 10. |
 | `Detect-DotNetWinget.ps1` | ConfigMgr detection script that reads the registry marker the installer writes. |
+| `Install-DotNet10Winget.ps1` | **.NET 10 edition.** Installs .NET 10 only, and removes out-of-support .NET versions. See [.NET 10 / .NET 11 editions](#net-10--net-11-editions). |
+| `Detect-DotNet10Winget.ps1` | Detection script for the .NET 10 edition. |
+| `Install-DotNet11Winget.ps1` | **.NET 11 edition.** Installs .NET 11 only, and removes out-of-support .NET versions. |
+| `Detect-DotNet11Winget.ps1` | Detection script for the .NET 11 edition. |
 
 ## Supported packages
 
@@ -105,6 +109,56 @@ Pass one or more winget IDs to skip the GUI. Log output goes to the console and 
 ### How detection works
 
 `Detect-DotNetWinget.ps1` reports the application as **installed** only for 60 minutes after a successful run, based on `LastRunUtc`. That window is set by `$WindowMinutes`. Because of this, Software Center shows the app as installed right after a run, and users can launch it again later to install more packages or pick up updates.
+
+## .NET 10 / .NET 11 editions
+
+`Install-DotNet10Winget.ps1` and `Install-DotNet11Winget.ps1` are the same script. They differ only in `$TargetMajor`, at the top of the file. Each edition does two jobs:
+
+- **Install:** Only the five packages of the target version can be installed: Runtime, Desktop Runtime, ASP.NET Core Runtime, Hosting Bundle and SDK. They install from winget in the same way as in the original script. No other .NET version can be installed. In headless mode, `-PackageId` rejects any ID for another version.
+- **Remove:** The script scans the device for every installed .NET (Core) runtime, Hosting Bundle and SDK, and lists them grouped by version along with their support status. Only out-of-support entries can be checked for removal.
+
+![.NET 10 edition](docs/gui-net10.png)
+
+<details><summary>.NET 11 edition</summary>
+
+![.NET 11 edition](docs/gui-net11.png)
+
+</details>
+
+### How installed versions are found
+
+1. **Add/Remove Programs:** The script reads the uninstall registry keys, both 64-bit and `WOW6432Node`. It keeps only the visible .NET bundle entries (Runtime, Desktop Runtime, ASP.NET Core, Hosting Bundle, SDK) and skips the hidden `SystemComponent` MSI parts.
+2. **Files on disk:** The script lists `Program Files\dotnet\shared\*` and `\sdk`, plus the `(x86)` folders. A runtime or SDK found on disk that no uninstall entry accounts for is shown as **No uninstaller (part of VS or an SDK)**. Visual Studio and SDK installs often add runtimes this way.
+
+### What can be removed
+
+| Entry | Checkbox |
+| --- | --- |
+| Out of support (end-of-support date has passed) | ✅ Removable |
+| Preview / RC build | ✅ Removable |
+| Older patch that a newer patch has superseded (same product, version and architecture) | ✅ Removable |
+| Supported version, for example .NET 10 in the .NET 11 edition | ⬜ Information only |
+| SDK installed by Visual Studio ("from Visual Studio") | ⬜ Information only. Remove it with the Visual Studio Installer. |
+| Files on disk with no uninstall entry | ⬜ Information only. Remove it with the product that installed it. |
+
+Support status comes from the `$EndOfSupport` table, which uses the dates from [Microsoft's .NET support policy](https://dotnet.microsoft.com/platform/support/policy/dotnet-core). As of November 2026, .NET 8 and .NET 9 reached end of support on **2026-11-10**, and .NET 10 (LTS) and .NET 11 (STS) are supported until **2028-11-14**. Update the table when Microsoft publishes new dates.
+
+Removal runs the entry's registered `QuietUninstallString` with `/norestart /log <LogDir>\uninstall_*.log`. For an MSI entry it runs `msiexec /x {GUID} /qn /norestart`. Exit codes `1605`/`1614` (product not installed) count as *already removed*. When you click **Apply selected**, checked installs run first, then removals. After the batch, the list is scanned again.
+
+### Usage
+
+```powershell
+# GUI
+powershell.exe -ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -File .\Install-DotNet10Winget.ps1
+
+# Headless: install .NET 10 runtimes and remove every removable (out-of-support / preview / superseded) entry
+.\Install-DotNet10Winget.ps1 -PackageId Microsoft.DotNet.Runtime.10,Microsoft.DotNet.DesktopRuntime.10 -RemoveUnsupported
+
+# Headless: cleanup only
+.\Install-DotNet10Winget.ps1 -RemoveUnsupported
+```
+
+Each edition writes its own log (`DotNet10WingetInstaller.log` / `DotNet11WingetInstaller.log`) and its own detection marker (`HKLM\SOFTWARE\DotNetWingetInstaller\NET10` / `NET11`). Use the matching `Detect-DotNet10Winget.ps1` / `Detect-DotNet11Winget.ps1` as the ConfigMgr detection script. The exit codes are the same as in the original script.
 
 ## Requirements
 
