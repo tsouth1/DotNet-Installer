@@ -1,26 +1,26 @@
 <#
 .SYNOPSIS
-    GUI that installs/upgrades .NET 11 packages with winget and removes out-of-support .NET versions.
+    GUI that installs, upgrades and uninstalls .NET 11 packages using winget.
 
 .DESCRIPTION
-    INSTALL - Only the .NET 11 packages can be installed: .NET Runtime, Desktop Runtime, ASP.NET Core Runtime,
-    Hosting Bundle and SDK. The list shows the latest version in the winget repository and the installed version.
-    Checked packages are installed one at a time, silently:
+    A single list shows two groups:
+
+    INSTALL - The .NET 11 packages available from the winget repository: .NET Runtime, Desktop Runtime,
+    ASP.NET Core Runtime, Hosting Bundle and SDK. Each row shows the latest version in winget and the installed
+    version. Checked packages are installed one at a time, silently, when "Install" is clicked:
 
         winget install --id <Id> --exact --source winget --silent
                --accept-package-agreements --accept-source-agreements --disable-interactivity
 
     "winget install" on a package that is already installed upgrades it to the latest version.
 
-    REMOVE - Every .NET (Core) runtime, Hosting Bundle and SDK installed on the device is listed, found through
-    the Add/Remove Programs registry keys and the dotnet folders on disk. Only these entries can be checked for
-    removal:
-        - out of support (end-of-support date in $EndOfSupport has passed)
-        - preview / release-candidate builds
-        - an older patch that a newer patch of the same product, major version and architecture has superseded
-    Supported versions, SDKs installed by Visual Studio, and runtimes with no standalone uninstaller (installed as
-    part of Visual Studio or an SDK) are listed for information only. They cannot be checked.
-    Removal runs the product's registered quiet uninstaller (/uninstall /quiet /norestart).
+    INSTALLED - The .NET 11 runtimes, Hosting Bundles and SDKs already on the device, found through the
+    Add/Remove Programs registry keys and the dotnet folders on disk. When an installed entry is checked, an
+    "Uninstall" button appears. It runs the product's registered quiet uninstaller (/uninstall /quiet /norestart).
+    SDKs installed by Visual Studio, and runtimes with no standalone uninstaller (installed as part of
+    Visual Studio or an SDK), are listed for information only and cannot be checked.
+
+    No other .NET major version can be installed by this script, and other versions are not listed.
 
     The script is built to run as SYSTEM from a ConfigMgr (SCCM) application with
     "Allow users to view and interact with the program installation" enabled.
@@ -32,26 +32,21 @@
     Optional. Skip the GUI and install the given winget IDs, e.g. -PackageId Microsoft.DotNet.Runtime.11
     Only .NET 11 IDs are accepted.
 
-.PARAMETER RemoveUnsupported
-    Optional. Skip the GUI and remove every removable entry (out of support / preview / superseded).
-    It can be combined with -PackageId. Installs run first.
-
 .EXAMPLE
     powershell.exe -ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -File .\Install-DotNet11Winget.ps1
 
 .EXAMPLE
-    .\Install-DotNet11Winget.ps1 -PackageId Microsoft.DotNet.Runtime.11,Microsoft.DotNet.DesktopRuntime.11 -RemoveUnsupported
+    .\Install-DotNet11Winget.ps1 -PackageId Microsoft.DotNet.Runtime.11,Microsoft.DotNet.DesktopRuntime.11
 #>
 [CmdletBinding()]
 param(
-    [string[]]$PackageId,
-    [switch]$RemoveUnsupported
+    [string[]]$PackageId
 )
 
 $ErrorActionPreference = 'Stop'
 
 #region ---------------- Configuration ----------------
-$TargetMajor = '11'                                  # the only .NET major version this script installs
+$TargetMajor = '11'                                  # the only .NET major version this script installs and lists
 $Products    = [ordered]@{                           # winget ID segment = display name
     'Runtime'        = '.NET Runtime'
     'DesktopRuntime' = '.NET Desktop Runtime'
@@ -59,36 +54,49 @@ $Products    = [ordered]@{                           # winget ID segment = displ
     'HostingBundle'  = 'ASP.NET Core Hosting Bundle'
     'SDK'            = '.NET SDK'
 }
-# End-of-support dates (yyyy-MM-dd) from https://dotnet.microsoft.com/platform/support/policy/dotnet-core
-# Keys: major version for .NET 5+, major.minor for .NET Core 1.x-3.x.
-# Versions missing from this table count as out of support if older than 5, and as supported if newer.
-$EndOfSupport = @{
-    '1.0' = '2019-06-27'; '1.1' = '2019-06-27'; '2.0' = '2018-10-01'; '2.1' = '2021-08-21'; '2.2' = '2019-12-23'
-    '3.0' = '2020-03-03'; '3.1' = '2022-12-13'
-    '5'   = '2022-05-10'; '6'   = '2024-11-12'; '7'   = '2024-05-14'; '8' = '2026-11-10'; '9' = '2026-11-10'
-    '10'  = '2028-11-14'; '11'  = '2028-11-14'
-}
 $LogFileName = "DotNet$($TargetMajor)WingetInstaller.log"
 $MarkerKey   = "HKLM:\SOFTWARE\DotNetWingetInstaller\NET$TargetMajor"   # written on success; used by the Detect script
+
+# GUI colour scheme
+$Theme = @{
+    Body         = '#F4F7FB'   # window background (light)
+    Header       = '#1F3A5F'   # heading text
+    SubText      = '#4A5568'   # secondary text
+    Pane         = '#EAF1FA'   # package list background
+    PaneText     = '#1B2A3A'   # package list text
+    Button       = '#1F3A5F'   # primary buttons (dark navy)
+    ButtonHover  = '#2C5282'
+    Danger       = '#9B2C2C'   # Uninstall button (dark red)
+    DangerHover  = '#B83232'
+    Neutral      = '#4A5568'   # Close / Clear (dark slate)
+    NeutralHover = '#5F6B7D'
+    Disabled     = '#97A3B4'
+    ButtonText   = '#FFFFFF'
+    LogBack      = '#FFFFFF'
+    LogText      = '#1B2A3A'
+    Ok           = '#1E7B34'
+    Warn         = '#B45309'
+    Bad          = '#B42318'
+    Busy         = '#1D4ED8'
+    Muted        = '#718096'
+}
 #endregion
 
 #region ---------------- Shared state ----------------
 $Sync = [hashtable]::Synchronized(@{
-    Queue        = New-Object 'System.Collections.Concurrent.ConcurrentQueue[object]'
-    LogLock      = New-Object object
-    LogDir       = $null
-    LogFile      = $null
-    Winget       = $null
-    Console      = $false
-    Busy         = $false
-    TargetMajor  = $TargetMajor
-    Products     = $Products
-    EndOfSupport = $EndOfSupport
-    Items        = [ordered]@{}     # install rows:  Id -> @{ Id; Name; Latest; Installed; Status }
-    Inventory    = [ordered]@{}     # removal rows:  Key -> @{ Key; Type; Version; Arch; ... Removable; Action }
-    Selected     = $null            # @{ Install = @(ids); Remove = @(keys) }
-    Results      = [ordered]@{}
-    Labels       = @{}
+    Queue       = New-Object 'System.Collections.Concurrent.ConcurrentQueue[object]'
+    LogLock     = New-Object object
+    LogDir      = $null
+    LogFile     = $null
+    Winget      = $null
+    Console     = $false
+    Busy        = $false
+    TargetMajor = $TargetMajor
+    Items       = [ordered]@{}     # install rows:   Id  -> @{ Id; Name; Latest; Installed; Status }
+    Inventory   = [ordered]@{}     # installed rows: Key -> @{ Key; Type; Name; Version; Arch; Removable; Action; ... }
+    Selected    = $null            # @{ Install = @(ids); Remove = @(keys) }
+    Results     = [ordered]@{}
+    Labels      = @{}
 })
 
 foreach ($p in $Products.Keys) {
@@ -215,9 +223,9 @@ $CoreScript = {
         param([string]$Result, [string]$Kind = 'Install')
         if ($Kind -eq 'Remove') {
             switch ($Result) {
-                'Success'  { 'Removed' }
-                'UpToDate' { 'Already removed' }
-                'Reboot'   { 'Removed (reboot required)' }
+                'Success'  { 'Uninstalled' }
+                'UpToDate' { 'Already uninstalled' }
+                'Reboot'   { 'Uninstalled (reboot required)' }
                 default    { 'FAILED - see log' }
             }
         }
@@ -231,45 +239,19 @@ $CoreScript = {
         }
     }
 
-    # ----- Inventory of installed .NET (Core) products -----
+    # ----- Installed versions of the target .NET major -----
 
-    function Split-DotNetVersion {
-        # '9.0.23' -> [version]9.0.23, Pre=$null ; '11.0.0-rc.3.1' -> [version]11.0.0, Pre='rc.3.1'
+    function Get-DotNetSortVersion {
         param([string]$Version)
-        $parts = $Version.Split('-', 2)
-        $v = $null; try { $v = [version]$parts[0] } catch { $v = [version]'0.0' }
-        $pre = $null; if ($parts.Count -gt 1) { $pre = $parts[1] }
-        @{ Version = $v; Pre = $pre }
-    }
-
-    function Compare-DotNetVersion {
-        # returns -1 / 0 / 1 ; a release sorts above its own previews
-        param([string]$A, [string]$B)
-        $x = Split-DotNetVersion $A; $y = Split-DotNetVersion $B
-        $c = $x.Version.CompareTo($y.Version)
-        if ($c -ne 0) { return [Math]::Sign($c) }
-        if (-not $x.Pre -and $y.Pre) { return 1 }
-        if ($x.Pre -and -not $y.Pre) { return -1 }
-        [Math]::Sign([string]::CompareOrdinal([string]$x.Pre, [string]$y.Pre))
-    }
-
-    function Get-SupportInfo {
-        param([string]$Version)
-        $p     = $Version.Split('-')[0].Split('.')
-        $major = [int]$p[0]
-        $key   = if ($major -lt 5) { '{0}.{1}' -f $p[0], $p[1] } else { [string]$major }
-        $eos   = $Sync.EndOfSupport[$key]
-        if ($eos) { $out = ([datetime]::Today -gt [datetime]::ParseExact($eos, 'yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture)) }
-        else      { $out = ($major -lt 5) }
-        $label = if ($major -lt 5) { ".NET Core $key" } else { ".NET $key" }
-        @{ Key = $key; Major = $major; Label = $label; EndOfSupport = $eos; OutOfSupport = $out; Preview = ($Version -match '-') }
+        try { [version]($Version.Split('-')[0]) } catch { [version]'0.0' }
     }
 
     function Get-DotNetInventory {
         $typeNames = @{ Runtime = '.NET Runtime'; DesktopRuntime = '.NET Desktop Runtime'; AspNetCore = 'ASP.NET Core Runtime'
                         HostingBundle = 'ASP.NET Core Hosting Bundle'; SDK = '.NET SDK' }
-        $rows = New-Object System.Collections.Generic.List[object]
-        $seen = @{}
+        $major = $Sync.TargetMajor
+        $rows  = New-Object System.Collections.Generic.List[object]
+        $seen  = @{}
 
         # 1) Add/Remove Programs entries (visible bundles only; SystemComponent=1 MSIs are internal parts of a bundle)
         $roots = @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall',
@@ -288,42 +270,29 @@ $CoreScript = {
                 elseif ($name -match '^Microsoft \.NET (Core )?Runtime')                         { $type = 'Runtime' }
                 if (-not $type) { continue }
                 if ($name -notmatch '(\d+\.\d+\.\d+(?:-[0-9A-Za-z\.\-]+)?)') { continue }
-                $ver  = $Matches[1]
+                $ver = $Matches[1]
+                if ($ver.Split('.')[0] -ne $major) { continue }
                 $arch = '-'; if ($name -match '\((x64|x86|arm64)\)') { $arch = $Matches[1] }
                 $seen[$k.PSChildName] = $true
-                $s = Get-SupportInfo $ver
-                $rows.Add(@{
+                $row = @{
                     Key = "reg:$($k.PSChildName)"; Source = 'Registry'; Type = $type; Name = $typeNames[$type]; DisplayName = $name
-                    Version = $ver; Arch = $arch; Support = $s; VisualStudio = ($name -match 'from Visual Studio')
-                    Quiet = [string]$e.QuietUninstallString; Uninstall = [string]$e.UninstallString
-                    Superseded = $null; Removable = $false; Action = ''
-                })
+                    Version = $ver; Arch = $arch; Quiet = [string]$e.QuietUninstallString; Uninstall = [string]$e.UninstallString
+                    Removable = $false; Action = ''
+                }
+                if     ($name -match 'from Visual Studio')        { $row.Action = 'Managed by Visual Studio' }
+                elseif (-not ($row.Quiet -or $row.Uninstall))     { $row.Action = 'No uninstaller registered' }
+                elseif ($ver -match '-')                          { $row.Removable = $true; $row.Action = 'Installed (preview build)' }
+                else                                              { $row.Removable = $true; $row.Action = 'Installed' }
+                $rows.Add($row)
             }
         }
 
-        # 2) Superseded patches: newer registry entry of the same product + major + arch
-        foreach ($r in $rows) {
-            foreach ($o in $rows) {
-                if ($o -eq $r -or $o.Type -ne $r.Type -or $o.Arch -ne $r.Arch -or $o.Support.Key -ne $r.Support.Key -or $o.Support.Preview) { continue }
-                if ((Compare-DotNetVersion $o.Version $r.Version) -gt 0 -and (-not $r.Superseded -or (Compare-DotNetVersion $o.Version $r.Superseded) -gt 0)) { $r.Superseded = $o.Version }
-            }
-        }
-
-        foreach ($r in $rows) {
-            if     ($r.VisualStudio)                     { $r.Action = 'Managed by Visual Studio' }
-            elseif (-not ($r.Quiet -or $r.Uninstall))    { $r.Action = 'No uninstaller registered' }
-            elseif ($r.Support.OutOfSupport)             { $r.Removable = $true; $r.Action = 'Remove (out of support)' }
-            elseif ($r.Support.Preview)                  { $r.Removable = $true; $r.Action = 'Remove (preview build)' }
-            elseif ($r.Superseded)                       { $r.Removable = $true; $r.Action = "Remove (superseded by $($r.Superseded))" }
-            else                                         { $r.Action = 'Keep (supported)' }
-        }
-
-        # 3) Files on disk with no matching uninstall entry (installed as part of Visual Studio or an SDK)
+        # 2) Files on disk with no matching uninstall entry (installed as part of Visual Studio or an SDK)
         $native = 'x64'; if ($env:PROCESSOR_ARCHITEW6432 -eq 'ARM64' -or $env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { $native = 'arm64' }
         $pf = $env:ProgramW6432; if (-not $pf) { $pf = $env:ProgramFiles }
         $diskRoots = @(@{ Path = Join-Path $pf 'dotnet'; Arch = $native })
         if (${env:ProgramFiles(x86)}) { $diskRoots += @{ Path = Join-Path ${env:ProgramFiles(x86)} 'dotnet'; Arch = 'x86' } }
-        $folders = @{ 'Microsoft.NETCore.App' = 'Runtime'; 'Microsoft.WindowsDesktop.App' = 'DesktopRuntime'; 'Microsoft.AspNetCore.App' = 'AspNetCore' }
+        $folders   = @{ 'Microsoft.NETCore.App' = 'Runtime'; 'Microsoft.WindowsDesktop.App' = 'DesktopRuntime'; 'Microsoft.AspNetCore.App' = 'AspNetCore' }
         # which uninstall-entry types put each kind of folder on disk
         $coveredBy = @{ Runtime = @('Runtime', 'DesktopRuntime', 'HostingBundle'); DesktopRuntime = @('DesktopRuntime')
                         AspNetCore = @('AspNetCore', 'HostingBundle'); SDK = @('SDK') }
@@ -335,17 +304,16 @@ $CoreScript = {
             }
             foreach ($d in @(Get-ChildItem (Join-Path $dr.Path 'sdk') -Directory -ErrorAction SilentlyContinue)) { $found += @{ Type = 'SDK'; Version = $d.Name } }
             foreach ($x in $found) {
-                if ($x.Version -notmatch '^\d+\.\d+\.\d+') { continue }
+                if ($x.Version -notmatch '^\d+\.\d+\.\d+' -or $x.Version.Split('.')[0] -ne $major) { continue }
                 $owners  = $coveredBy[$x.Type]
                 $covered = @($rows | Where-Object { $_.Version -eq $x.Version -and $owners -contains $_.Type -and ($_.Arch -eq '-' -or $_.Arch -eq $dr.Arch) }).Count -gt 0
                 if ($covered) { continue }
                 $dk = "disk:$($x.Type):$($x.Version)"
                 if (-not $disk.Contains($dk)) {
-                    $s = Get-SupportInfo $x.Version
                     $disk[$dk] = @{
                         Key = $dk; Source = 'Disk'; Type = $x.Type; Name = $typeNames[$x.Type]; DisplayName = "$($typeNames[$x.Type]) $($x.Version)"
-                        Version = $x.Version; Arch = $dr.Arch; Support = $s; VisualStudio = $false; Quiet = ''; Uninstall = ''
-                        Superseded = $null; Removable = $false; Action = 'No uninstaller (part of VS or an SDK)'
+                        Version = $x.Version; Arch = $dr.Arch; Quiet = ''; Uninstall = ''
+                        Removable = $false; Action = 'No uninstaller (part of VS or an SDK)'
                     }
                 }
                 elseif ($disk[$dk].Arch -notmatch [regex]::Escape($dr.Arch)) { $disk[$dk].Arch += ", $($dr.Arch)" }
@@ -353,12 +321,10 @@ $CoreScript = {
         }
         foreach ($d in $disk.Values) { $rows.Add($d) }
 
-        # Sort: newest major first, then product, then newest version first
-        $order = @{ Runtime = 0; DesktopRuntime = 1; AspNetCore = 2; HostingBundle = 3; SDK = 4 }
-        $sorted = @($rows | Sort-Object @{ e = { $_.Support.Major }; Descending = $true },
-                                        @{ e = { [version]($_.Support.Key + '.0') }; Descending = $true },
-                                        @{ e = { $order[$_.Type] } },
-                                        @{ e = { (Split-DotNetVersion $_.Version).Version }; Descending = $true },
+        # Sort: product, then newest version first, then architecture
+        $order  = @{ Runtime = 0; DesktopRuntime = 1; AspNetCore = 2; HostingBundle = 3; SDK = 4 }
+        $sorted = @($rows | Sort-Object @{ e = { $order[$_.Type] } },
+                                        @{ e = { Get-DotNetSortVersion $_.Version }; Descending = $true },
                                         @{ e = { $_.Arch } })
         $inv = [ordered]@{}
         foreach ($r in $sorted) { $inv[$r.Key] = $r }
@@ -483,7 +449,7 @@ if (-not $isAdmin) { Write-Log 'Not running elevated: each install/uninstall wil
 #endregion
 
 #region ---------------- Headless mode ----------------
-if ($PackageId -or $RemoveUnsupported) {
+if ($PackageId) {
     $Sync.Console = $true
     $bad = @($PackageId | Where-Object { $_ -and -not $Sync.Items.Contains($_) })
     if ($bad.Count -gt 0) {
@@ -491,24 +457,12 @@ if ($PackageId -or $RemoveUnsupported) {
         Write-Log "Allowed: $($Sync.Items.Keys -join ', ')" Error
         exit 1
     }
+    $err = Test-Winget
+    if ($err) { Write-Log $err Error; exit 1 }
     $results = [ordered]@{}
-    if ($PackageId) {
-        $err = Test-Winget
-        if ($err) { Write-Log $err Error; exit 1 }
-        foreach ($id in $PackageId) {
-            $k = "install:$id"; $Sync.Labels[$k] = $id
-            try { $results[$k] = Install-DotNetPackage -Id $id } catch { Write-Log "${id}: $_" Error; $results[$k] = 'Failed' }
-        }
-    }
-    if ($RemoveUnsupported) {
-        $inv = Get-DotNetInventory
-        foreach ($e in $inv.Values) { Write-Log ('Found: {0} [{1}] -> {2}' -f $e.DisplayName, $e.Arch, $e.Action) }
-        $targets = @($inv.Values | Where-Object { $_.Removable })
-        if ($targets.Count -eq 0) { Write-Log 'Nothing to remove.' }
-        foreach ($e in $targets) {
-            $k = "remove:$($e.Key)"; $Sync.Labels[$k] = "Remove $($e.DisplayName)"
-            try { $results[$k] = Uninstall-DotNetEntry -Entry $e } catch { Write-Log "$($e.DisplayName): $_" Error; $results[$k] = 'Failed' }
-        }
+    foreach ($id in $PackageId) {
+        $k = "install:$id"; $Sync.Labels[$k] = $id
+        try { $results[$k] = Install-DotNetPackage -Id $id } catch { Write-Log "${id}: $_" Error; $results[$k] = 'Failed' }
     }
     $code = Get-OverallExitCode $results
     Set-Marker -ExitCode $code -Results $results
@@ -521,196 +475,207 @@ if ($PackageId -or $RemoveUnsupported) {
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
+$C = @{}; foreach ($k in $Theme.Keys) { $C[$k] = [System.Drawing.ColorTranslator]::FromHtml($Theme[$k]) }
+$Title = ".NET $TargetMajor Installer"
+
 $wingetError = Test-Winget
 if ($wingetError) {
     Write-Log $wingetError Error
-    [void][System.Windows.Forms.MessageBox]::Show("$wingetError`r`n`r`nLog: $($Sync.LogFile)", ".NET $TargetMajor Installer", 'OK', 'Error')
+    [void][System.Windows.Forms.MessageBox]::Show("$wingetError`r`n`r`nLog: $($Sync.LogFile)", $Title, 'OK', 'Error')
     exit 1
 }
 
 $script:AllResults = [ordered]@{}
-$Title = ".NET $TargetMajor Installer"
 
 $form = New-Object System.Windows.Forms.Form
 $form.Text          = "$Title (winget)  -  running as $runAs"
-$form.Size          = New-Object System.Drawing.Size(980, 880)
-$form.MinimumSize   = New-Object System.Drawing.Size(820, 700)
+$form.Size          = New-Object System.Drawing.Size(960, 760)
+$form.MinimumSize   = New-Object System.Drawing.Size(800, 600)
 $form.StartPosition = 'CenterScreen'
 $form.Font          = New-Object System.Drawing.Font('Segoe UI', 9)
-$boldFont           = New-Object System.Drawing.Font('Segoe UI', 9.5, [System.Drawing.FontStyle]::Bold)
+$form.BackColor     = $C.Body
+$form.ForeColor     = $C.PaneText
 
 $layout = New-Object System.Windows.Forms.TableLayoutPanel
 $layout.Dock        = 'Fill'
-$layout.Padding     = New-Object System.Windows.Forms.Padding(10)
+$layout.Padding     = New-Object System.Windows.Forms.Padding(14, 12, 14, 12)
 $layout.ColumnCount = 1
-$layout.RowCount    = 7
-[void]$layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('AutoSize')))       # 0 install header
-[void]$layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Absolute', 140)))  # 1 install list
-[void]$layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('AutoSize')))       # 2 remove header
-[void]$layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Percent', 62)))    # 3 remove list
-[void]$layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('AutoSize')))       # 4 buttons
-[void]$layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('AutoSize')))       # 5 progress
-[void]$layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Percent', 38)))    # 6 log
+$layout.RowCount    = 5
+$layout.BackColor   = $C.Body
+[void]$layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('AutoSize')))      # 0 header
+[void]$layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Percent', 64)))   # 1 package list
+[void]$layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('AutoSize')))      # 2 buttons
+[void]$layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('AutoSize')))      # 3 progress
+[void]$layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Percent', 36)))   # 4 log
 $form.Controls.Add($layout)
 
-function New-Header([string]$Bold, [string]$Text) {
-    $panel = New-Object System.Windows.Forms.FlowLayoutPanel
-    $panel.AutoSize = $true; $panel.Dock = 'Fill'; $panel.WrapContents = $true
-    $panel.Margin = New-Object System.Windows.Forms.Padding(0, 4, 0, 4)
-    $b = New-Object System.Windows.Forms.Label; $b.AutoSize = $true; $b.Font = $boldFont; $b.Text = $Bold
-    $t = New-Object System.Windows.Forms.Label; $t.AutoSize = $true; $t.Text = $Text; $t.Margin = New-Object System.Windows.Forms.Padding(6, 1, 0, 0)
-    $panel.Controls.AddRange(@($b, $t))
-    $panel
+# --- header ---
+$hdr = New-Object System.Windows.Forms.TableLayoutPanel
+$hdr.AutoSize = $true; $hdr.Dock = 'Fill'; $hdr.ColumnCount = 1; $hdr.RowCount = 2
+$hdr.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 8)
+$hdrTitle = New-Object System.Windows.Forms.Label
+$hdrTitle.AutoSize = $true; $hdrTitle.Text = ".NET $TargetMajor"
+$hdrTitle.Font = New-Object System.Drawing.Font('Segoe UI Semibold', 14)
+$hdrTitle.ForeColor = $C.Header
+$hdrText = New-Object System.Windows.Forms.Label
+$hdrText.AutoSize = $true; $hdrText.ForeColor = $C.SubText
+$hdrText.MaximumSize = New-Object System.Drawing.Size(900, 0)
+$hdrText.Text = "Check a package to install the latest .NET $TargetMajor from winget (installed packages are upgraded), " +
+                "or check an installed version to uninstall it."
+$hdr.Controls.Add($hdrTitle, 0, 0); $hdr.Controls.Add($hdrText, 0, 1)
+$layout.Controls.Add($hdr, 0, 0)
+
+# --- single package list ---
+$lv = New-Object System.Windows.Forms.ListView
+$lv.View = 'Details'; $lv.CheckBoxes = $true; $lv.FullRowSelect = $true
+$lv.HideSelection = $true; $lv.MultiSelect = $false; $lv.Dock = 'Fill'
+$lv.BackColor = $C.Pane; $lv.ForeColor = $C.PaneText; $lv.BorderStyle = 'FixedSingle'
+$lv.ShowItemToolTips = $true
+[void]$lv.Columns.Add('Package', 250)
+[void]$lv.Columns.Add('Latest', 110)
+[void]$lv.Columns.Add('Installed', 130)
+[void]$lv.Columns.Add('Arch', 80)
+[void]$lv.Columns.Add('Status', 300)
+$grpInstall   = New-Object System.Windows.Forms.ListViewGroup('install',   "Install .NET $TargetMajor  -  latest version from winget")
+$grpInstalled = New-Object System.Windows.Forms.ListViewGroup('installed', "Installed .NET $TargetMajor on this device  -  check to uninstall")
+[void]$lv.Groups.Add($grpInstall); [void]$lv.Groups.Add($grpInstalled)
+
+function Set-SubColors($li, [System.Drawing.Color]$Color) {
+    foreach ($s in $li.SubItems) { $s.ForeColor = $Color; $s.BackColor = $C.Pane }
 }
 
-$layout.Controls.Add((New-Header "Install .NET $TargetMajor" 'Latest version from the winget repository. Packages already installed are upgraded.'), 0, 0)
-
-$lvInstall = New-Object System.Windows.Forms.ListView
-$lvInstall.View = 'Details'; $lvInstall.CheckBoxes = $true; $lvInstall.FullRowSelect = $true
-$lvInstall.HideSelection = $true; $lvInstall.MultiSelect = $false; $lvInstall.Dock = 'Fill'
-[void]$lvInstall.Columns.Add('Package', 240)
-[void]$lvInstall.Columns.Add('Winget ID', 270)
-[void]$lvInstall.Columns.Add('Latest', 100)
-[void]$lvInstall.Columns.Add('Installed', 100)
-[void]$lvInstall.Columns.Add('Status', 190)
 foreach ($item in $Sync.Items.Values) {
     $li = New-Object System.Windows.Forms.ListViewItem($item.Name)
-    $li.Name = $item.Id
-    [void]$li.SubItems.Add($item.Id)
-    [void]$li.SubItems.Add('...')
-    [void]$li.SubItems.Add('...')
-    [void]$li.SubItems.Add('Checking...')
+    $li.Name = $item.Id; $li.Group = $grpInstall; $li.ToolTipText = $item.Id
     $li.UseItemStyleForSubItems = $false
-    [void]$lvInstall.Items.Add($li)
+    [void]$li.SubItems.Add('...'); [void]$li.SubItems.Add('...'); [void]$li.SubItems.Add('-'); [void]$li.SubItems.Add('Checking...')
+    Set-SubColors $li $C.PaneText
+    [void]$lv.Items.Add($li)
 }
-$layout.Controls.Add($lvInstall, 0, 1)
+$phLi = New-Object System.Windows.Forms.ListViewItem('Scanning...')
+$phLi.Name = 'placeholder'; $phLi.Group = $grpInstalled; $phLi.UseItemStyleForSubItems = $false
+Set-SubColors $phLi $C.Muted
+[void]$lv.Items.Add($phLi)
+$layout.Controls.Add($lv, 0, 1)
 
-$layout.Controls.Add((New-Header 'Installed .NET on this device' 'Out-of-support, preview and superseded versions can be checked for removal. Other versions are listed for information.'), 0, 2)
-
-$lvRemove = New-Object System.Windows.Forms.ListView
-$lvRemove.View = 'Details'; $lvRemove.CheckBoxes = $true; $lvRemove.FullRowSelect = $true
-$lvRemove.HideSelection = $true; $lvRemove.MultiSelect = $false; $lvRemove.Dock = 'Fill'
-[void]$lvRemove.Columns.Add('Package', 230)
-[void]$lvRemove.Columns.Add('Version', 150)
-[void]$lvRemove.Columns.Add('Arch', 75)
-[void]$lvRemove.Columns.Add('Support', 170)
-[void]$lvRemove.Columns.Add('Action', 290)
-$phLi = New-Object System.Windows.Forms.ListViewItem('Scanning installed .NET versions...')
-$phLi.ForeColor = [System.Drawing.Color]::Gray
-[void]$lvRemove.Items.Add($phLi)
-$layout.Controls.Add($lvRemove, 0, 3)
+# --- buttons ---
+function New-ThemedButton([string]$Text, [int]$Width, [System.Drawing.Color]$Back, [System.Drawing.Color]$Hover) {
+    $b = New-Object System.Windows.Forms.Button
+    $b.Text = $Text; $b.Size = New-Object System.Drawing.Size($Width, 34)
+    $b.FlatStyle = 'Flat'; $b.FlatAppearance.BorderSize = 0
+    $b.FlatAppearance.MouseOverBackColor = $Hover; $b.FlatAppearance.MouseDownBackColor = $Hover
+    $b.BackColor = $Back; $b.ForeColor = $C.ButtonText; $b.Tag = $Back
+    $b.Font = New-Object System.Drawing.Font('Segoe UI Semibold', 9)
+    $b.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $b.Margin = New-Object System.Windows.Forms.Padding(8, 0, 0, 0)
+    $b.UseVisualStyleBackColor = $false
+    $b.Add_EnabledChanged({ if ($this.Enabled) { $this.BackColor = $this.Tag } else { $this.BackColor = $C.Disabled } })
+    $b
+}
 
 $btnRow = New-Object System.Windows.Forms.FlowLayoutPanel
-$btnRow.Dock = 'Fill'; $btnRow.AutoSize = $true; $btnRow.FlowDirection = 'RightToLeft'
-$btnRow.Margin = New-Object System.Windows.Forms.Padding(0, 6, 0, 6)
-$btnClose     = New-Object System.Windows.Forms.Button; $btnClose.Text     = 'Close';                 $btnClose.Size     = New-Object System.Drawing.Size(100, 30)
-$btnApply     = New-Object System.Windows.Forms.Button; $btnApply.Text     = 'Apply selected';        $btnApply.Size     = New-Object System.Drawing.Size(130, 30)
-$btnClear     = New-Object System.Windows.Forms.Button; $btnClear.Text     = 'Clear selection';       $btnClear.Size     = New-Object System.Drawing.Size(120, 30)
-$btnSelectOld = New-Object System.Windows.Forms.Button; $btnSelectOld.Text = 'Select all removable';  $btnSelectOld.Size = New-Object System.Drawing.Size(150, 30)
-$lblStatus    = New-Object System.Windows.Forms.Label;  $lblStatus.AutoSize = $true; $lblStatus.Margin = New-Object System.Windows.Forms.Padding(0, 8, 20, 0)
+$btnRow.Dock = 'Fill'; $btnRow.AutoSize = $true; $btnRow.FlowDirection = 'RightToLeft'; $btnRow.WrapContents = $false
+$btnRow.Margin = New-Object System.Windows.Forms.Padding(0, 10, 0, 8)
+$btnClose     = New-ThemedButton 'Close'           100 $C.Neutral $C.NeutralHover
+$btnInstall   = New-ThemedButton 'Install'         120 $C.Button  $C.ButtonHover
+$btnUninstall = New-ThemedButton 'Uninstall'       120 $C.Danger  $C.DangerHover
+$btnClear     = New-ThemedButton 'Clear selection' 130 $C.Neutral $C.NeutralHover
+$lblStatus    = New-Object System.Windows.Forms.Label
+$lblStatus.AutoSize = $true; $lblStatus.ForeColor = $C.SubText
+$lblStatus.Margin = New-Object System.Windows.Forms.Padding(0, 9, 16, 0)
 $lblStatus.Text = 'Reading installed and latest versions...'
-$btnApply.Enabled = $false
-$btnRow.Controls.AddRange(@($btnClose, $btnApply, $btnClear, $btnSelectOld, $lblStatus))
-$layout.Controls.Add($btnRow, 0, 4)
+$btnInstall.Enabled = $false
+$btnUninstall.Visible = $false
+$btnRow.Controls.AddRange(@($btnClose, $btnInstall, $btnUninstall, $btnClear, $lblStatus))
+$layout.Controls.Add($btnRow, 0, 2)
 
 $progress = New-Object System.Windows.Forms.ProgressBar
-$progress.Dock = 'Fill'; $progress.Height = 18; $progress.Style = 'Marquee'; $progress.MarqueeAnimationSpeed = 30
-$layout.Controls.Add($progress, 0, 5)
+$progress.Dock = 'Fill'; $progress.Height = 16; $progress.Style = 'Marquee'; $progress.MarqueeAnimationSpeed = 30
+$progress.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 8)
+$layout.Controls.Add($progress, 0, 3)
 
 $logBox = New-Object System.Windows.Forms.RichTextBox
-$logBox.Dock = 'Fill'; $logBox.ReadOnly = $true; $logBox.BackColor = [System.Drawing.Color]::White
+$logBox.Dock = 'Fill'; $logBox.ReadOnly = $true; $logBox.BorderStyle = 'FixedSingle'
+$logBox.BackColor = $C.LogBack; $logBox.ForeColor = $C.LogText
 $logBox.Font = New-Object System.Drawing.Font('Consolas', 9); $logBox.WordWrap = $false
-$layout.Controls.Add($logBox, 0, 6)
+$layout.Controls.Add($logBox, 0, 4)
+
+function Get-CheckedIds  { @($lv.CheckedItems | Where-Object { $_.Group -eq $grpInstall }   | ForEach-Object { $_.Name }) }
+function Get-CheckedKeys { @($lv.CheckedItems | Where-Object { $_.Group -eq $grpInstalled } | ForEach-Object { $_.Name }) }
 
 function Update-Buttons {
-    $n = $lvInstall.CheckedItems.Count + $lvRemove.CheckedItems.Count
-    $btnApply.Enabled     = (-not $Sync.Busy) -and ($n -gt 0)
+    $nInstall = (Get-CheckedIds).Count
+    $nRemove  = (Get-CheckedKeys).Count
+    $btnInstall.Enabled   = (-not $Sync.Busy) -and ($nInstall -gt 0)
+    $btnUninstall.Visible = ($nRemove -gt 0)
+    $btnUninstall.Enabled = (-not $Sync.Busy) -and ($nRemove -gt 0)
     $btnClear.Enabled     = (-not $Sync.Busy)
-    $btnSelectOld.Enabled = (-not $Sync.Busy) -and (@($Sync.Inventory.Values | Where-Object { $_.Removable }).Count -gt 0)
 }
 
 function Get-StatusColor([string]$Status) {
     switch -Wildcard ($Status) {
-        'Up to date'          { [System.Drawing.Color]::Green }
-        'Already*'            { [System.Drawing.Color]::Green }
-        'Installed*'          { [System.Drawing.Color]::Green }
-        'Removed*'            { [System.Drawing.Color]::Green }
-        'Update available'    { [System.Drawing.Color]::DarkOrange }
-        'FAILED*'             { [System.Drawing.Color]::Red }
-        'Not found in winget' { [System.Drawing.Color]::Red }
-        'Installing*'         { [System.Drawing.Color]::Blue }
-        'Removing*'           { [System.Drawing.Color]::Blue }
-        'Remove*'             { [System.Drawing.Color]::DarkOrange }
-        default               { [System.Drawing.Color]::Black }
+        'Up to date'          { $C.Ok }
+        'Already*'            { $C.Ok }
+        'Installed (preview*' { $C.Warn }
+        'Installed*'          { $C.Ok }
+        'Uninstalled*'        { $C.Ok }
+        'Update available'    { $C.Warn }
+        'FAILED*'             { $C.Bad }
+        'Not found in winget' { $C.Bad }
+        'Installing*'         { $C.Busy }
+        'Uninstalling*'       { $C.Busy }
+        default               { $C.PaneText }
     }
 }
 
 function Set-ItemRow {
     param($Msg)
-    $li = $lvInstall.Items[$Msg.Id]
+    $li = $lv.Items[$Msg.Id]
     if (-not $li) { return }
-    if ($Msg.ContainsKey('Latest'))    { $v = $Msg.Latest;    if (-not $v) { $v = '-' }; $li.SubItems[2].Text = $v }
-    if ($Msg.ContainsKey('Installed')) { $v = $Msg.Installed; if (-not $v) { $v = '-' }; $li.SubItems[3].Text = $v }
+    if ($Msg.ContainsKey('Latest'))    { $v = $Msg.Latest;    if (-not $v) { $v = '-' }; $li.SubItems[1].Text = $v }
+    if ($Msg.ContainsKey('Installed')) { $v = $Msg.Installed; if (-not $v) { $v = '-' }; $li.SubItems[2].Text = $v }
     if ($Msg.ContainsKey('Status'))    { $li.SubItems[4].Text = $Msg.Status; $li.SubItems[4].ForeColor = Get-StatusColor $Msg.Status }
 }
 
-function Set-RemoveRowStatus {
+function Set-InstalledRowStatus {
     param($Msg)
-    $li = $lvRemove.Items[$Msg.Key]
+    $li = $lv.Items[$Msg.Key]
     if (-not $li) { return }
     $li.SubItems[4].Text = $Msg.Status
     $li.SubItems[4].ForeColor = Get-StatusColor $Msg.Status
 }
 
-function Update-RemoveList {
-    $lvRemove.BeginUpdate()
+function Update-InstalledRows {
+    $lv.BeginUpdate()
     try {
-        $lvRemove.Items.Clear(); $lvRemove.Groups.Clear()
-        $groups = @{}
+        foreach ($li in @($lv.Items)) { if ($li.Group -eq $grpInstalled) { $lv.Items.Remove($li) } }
         foreach ($e in $Sync.Inventory.Values) {
-            $s = $e.Support
-            if (-not $groups.ContainsKey($s.Key)) {
-                $title = $s.Label
-                if     ($s.Key -eq $TargetMajor)  { $title += "  -  supported until $($s.EndOfSupport)  (installed by this tool)" }
-                elseif ($s.OutOfSupport)          { if ($s.EndOfSupport) { $title += "  -  OUT OF SUPPORT since $($s.EndOfSupport)" } else { $title += '  -  OUT OF SUPPORT' } }
-                elseif ($s.EndOfSupport)          { $title += "  -  supported until $($s.EndOfSupport)" }
-                else                              { $title += '  -  support date unknown' }
-                $g = New-Object System.Windows.Forms.ListViewGroup($s.Key, $title)
-                [void]$lvRemove.Groups.Add($g); $groups[$s.Key] = $g
-            }
             $li = New-Object System.Windows.Forms.ListViewItem($e.Name)
-            $li.Name  = $e.Key
-            $li.Group = $groups[$s.Key]
+            $li.Name = $e.Key; $li.Group = $grpInstalled; $li.ToolTipText = $e.DisplayName
             $li.UseItemStyleForSubItems = $false
-            $li.ToolTipText = $e.DisplayName
+            [void]$li.SubItems.Add('')
             [void]$li.SubItems.Add($e.Version)
             [void]$li.SubItems.Add($e.Arch)
-            $sup = if ($s.Preview) { 'Preview (unsupported)' } elseif ($s.OutOfSupport) { 'Out of support' } else { 'Supported' }
-            [void]$li.SubItems.Add($sup)
             [void]$li.SubItems.Add($e.Action)
-            $li.SubItems[3].ForeColor = if ($s.OutOfSupport -or $s.Preview) { [System.Drawing.Color]::Red } else { [System.Drawing.Color]::Green }
-            if ($e.Removable) { $li.SubItems[4].ForeColor = [System.Drawing.Color]::DarkOrange }
-            else {
-                foreach ($i in 0, 1, 2, 4) { $li.SubItems[$i].ForeColor = [System.Drawing.Color]::Gray }
-            }
-            [void]$lvRemove.Items.Add($li)
+            if ($e.Removable) { Set-SubColors $li $C.PaneText; $li.SubItems[4].ForeColor = Get-StatusColor $e.Action }
+            else              { Set-SubColors $li $C.Muted }
+            [void]$lv.Items.Add($li)
         }
         if ($Sync.Inventory.Count -eq 0) {
-            $li = New-Object System.Windows.Forms.ListViewItem('No .NET (Core) runtimes or SDKs found.')
-            $li.ForeColor = [System.Drawing.Color]::Gray
-            [void]$lvRemove.Items.Add($li)
+            $li = New-Object System.Windows.Forms.ListViewItem("No .NET $TargetMajor runtimes or SDKs are installed.")
+            $li.Name = 'placeholder'; $li.Group = $grpInstalled; $li.UseItemStyleForSubItems = $false
+            Set-SubColors $li $C.Muted
+            [void]$lv.Items.Add($li)
         }
     }
-    finally { $lvRemove.EndUpdate() }
-    $lvRemove.ShowItemToolTips = $true
+    finally { $lv.EndUpdate() }
 }
 
 $LoadWorker = {
     try {
-        Write-Log 'Scanning installed .NET versions (Add/Remove Programs + dotnet folders)...'
+        Write-Log "Scanning installed .NET $($Sync.TargetMajor) versions (Add/Remove Programs + dotnet folders)..."
         $Sync.Inventory = Get-DotNetInventory
-        $nRem = @($Sync.Inventory.Values | Where-Object { $_.Removable }).Count
-        Write-Log ('Found {0} installed .NET entries, {1} removable.' -f $Sync.Inventory.Count, $nRem)
+        Write-Log ('Found {0} installed .NET {1} entries, {2} can be uninstalled.' -f $Sync.Inventory.Count, $Sync.TargetMajor, @($Sync.Inventory.Values | Where-Object { $_.Removable }).Count)
         $Sync.Queue.Enqueue(@{ Type = 'Inventory' })
 
         Write-Log 'Reading installed packages (winget export)...'
@@ -731,7 +696,7 @@ $LoadWorker = {
     finally { $Sync.Queue.Enqueue(@{ Type = 'LoadDone' }) }
 }
 
-$ApplyWorker = {
+$WorkWorker = {
     $results = [ordered]@{}
     try {
         $ids   = @($Sync.Selected.Install)
@@ -750,73 +715,73 @@ $ApplyWorker = {
         }
         foreach ($key in $keys) {
             $e = $Sync.Inventory[$key]
-            $Sync.Queue.Enqueue(@{ Type = 'Progress'; Value = [int](100 * $n / $total); Text = ('{0} of {1}: removing {2} {3}' -f ($n + 1), $total, $e.Name, $e.Version) })
-            $Sync.Queue.Enqueue(@{ Type = 'RemoveRow'; Key = $key; Status = 'Removing...' })
-            Write-Log "----- [$($n + 1)/$total] Remove $($e.DisplayName) -----"
+            $Sync.Queue.Enqueue(@{ Type = 'Progress'; Value = [int](100 * $n / $total); Text = ('{0} of {1}: uninstalling {2} {3}' -f ($n + 1), $total, $e.Name, $e.Version) })
+            $Sync.Queue.Enqueue(@{ Type = 'InstalledRow'; Key = $key; Status = 'Uninstalling...' })
+            Write-Log "----- [$($n + 1)/$total] Uninstall $($e.DisplayName) -----"
             try { $res = Uninstall-DotNetEntry -Entry $e } catch { Write-Log "$($e.DisplayName): $_" Error; $res = 'Failed' }
             $results["remove:$key"] = $res
-            $Sync.Queue.Enqueue(@{ Type = 'RemoveRow'; Key = $key; Status = (Get-FriendlyResult $res 'Remove') })
+            $Sync.Queue.Enqueue(@{ Type = 'InstalledRow'; Key = $key; Status = (Get-FriendlyResult $res 'Remove') })
             $n++
         }
         $Sync.Queue.Enqueue(@{ Type = 'Progress'; Value = 100; Text = 'Refreshing installed versions...' })
+        Write-Log 'Refreshing installed versions...'
         $installed = Get-InstalledPackages
         foreach ($item in $Sync.Items.Values) {
             $item.Installed = $installed[$item.Id]
             $item.Status    = Get-ItemStatus $item
             $Sync.Queue.Enqueue(@{ Type = 'Item'; Id = $item.Id; Installed = $item.Installed })
         }
+        $Sync.Inventory = Get-DotNetInventory
+        $Sync.Queue.Enqueue(@{ Type = 'Inventory' })
     }
     catch { Write-Log "Unexpected error: $_" Error }
     finally {
         $Sync.Results = $results
-        $Sync.Queue.Enqueue(@{ Type = 'ApplyDone' })
+        $Sync.Queue.Enqueue(@{ Type = 'WorkDone' })
     }
 }
 
-$RescanWorker = {
-    try { $Sync.Inventory = Get-DotNetInventory; $Sync.Queue.Enqueue(@{ Type = 'Inventory' }) }
-    catch { Write-Log "Error while rescanning: $_" Error }
-}
-
-$lvInstall.Add_ItemCheck({ param($s, $e) if ($Sync.Busy) { $e.NewValue = $e.CurrentValue } })
-$lvRemove.Add_ItemCheck({
-    param($s, $e)
-    $entry = $Sync.Inventory[$lvRemove.Items[$e.Index].Name]
-    if ($Sync.Busy -or -not $entry -or -not $entry.Removable) { $e.NewValue = $e.CurrentValue }
-})
-$lvInstall.Add_ItemChecked({ Update-Buttons })
-$lvRemove.Add_ItemChecked({ Update-Buttons })
-
-$btnClear.Add_Click({
-    foreach ($li in @($lvInstall.CheckedItems)) { $li.Checked = $false }
-    foreach ($li in @($lvRemove.CheckedItems))  { $li.Checked = $false }
-})
-$btnSelectOld.Add_Click({
-    foreach ($li in $lvRemove.Items) { $e = $Sync.Inventory[$li.Name]; if ($e -and $e.Removable) { $li.Checked = $true } }
-})
-
-$btnApply.Add_Click({
-    $ids  = @($lvInstall.CheckedItems | ForEach-Object { $_.Name })
-    $keys = @($lvRemove.CheckedItems  | ForEach-Object { $_.Name })
-    if ($ids.Count + $keys.Count -eq 0) { return }
-    $text = ''
-    if ($ids.Count)  { $text += "Install:`r`n" + (($ids | ForEach-Object { '  + ' + $Sync.Items[$_].Name }) -join "`r`n") + "`r`n`r`n" }
-    if ($keys.Count) { $text += "Remove:`r`n"  + (($keys | ForEach-Object { $e = $Sync.Inventory[$_]; '  - {0} {1} ({2})' -f $e.Name, $e.Version, $e.Arch }) -join "`r`n") + "`r`n`r`n" }
-    if ($keys.Count) { $text += "Applications that still target a removed version will stop working until they are updated.`r`n`r`n" }
-    $answer = [System.Windows.Forms.MessageBox]::Show("${text}Continue?", $Title, 'YesNo', 'Question')
+function Start-Batch {
+    param([string[]]$Ids, [string[]]$Keys, [string]$Verb)
+    $Ids = @($Ids | Where-Object { $_ }); $Keys = @($Keys | Where-Object { $_ })
+    if ($Ids.Count + $Keys.Count -eq 0) { return }
+    if ($Ids.Count) {
+        $text = "Install the following packages?`r`n`r`n" + (($Ids | ForEach-Object { '  + ' + $Sync.Items[$_].Name }) -join "`r`n")
+    }
+    else {
+        $text = "Uninstall the following?`r`n`r`n" + (($Keys | ForEach-Object { $e = $Sync.Inventory[$_]; '  - {0} {1} ({2})' -f $e.Name, $e.Version, $e.Arch }) -join "`r`n") +
+                "`r`n`r`nApplications that use these versions will stop working until another compatible version is installed."
+    }
+    $answer = [System.Windows.Forms.MessageBox]::Show($text, $Title, 'YesNo', 'Question')
     if ($answer -ne 'Yes') { return }
-    foreach ($id in $ids)  { $Sync.Labels["install:$id"] = $Sync.Items[$id].Name }
-    foreach ($k in $keys)  { $e = $Sync.Inventory[$k]; $Sync.Labels["remove:$k"] = 'Remove {0} {1} ({2})' -f $e.Name, $e.Version, $e.Arch }
-    $Sync.Selected = @{ Install = $ids; Remove = $keys }
+    foreach ($id in $Ids) { $Sync.Labels["install:$id"] = $Sync.Items[$id].Name }
+    foreach ($k in $Keys) { $e = $Sync.Inventory[$k]; $Sync.Labels["remove:$k"] = 'Uninstall {0} {1} ({2})' -f $e.Name, $e.Version, $e.Arch }
+    $Sync.Selected = @{ Install = $Ids; Remove = $Keys }
     $Sync.Busy     = $true
     Update-Buttons
     $btnClose.Enabled = $false
     $progress.Style   = 'Continuous'
     $progress.Value   = 0
-    Write-Log ('Selected: install [{0}], remove [{1}]' -f ($ids -join ', '), (($keys | ForEach-Object { $Sync.Inventory[$_].DisplayName }) -join ', '))
-    Start-Worker $ApplyWorker
-})
+    if ($Ids.Count) { Write-Log "Selected for install: $($Ids -join ', ')" }
+    else            { Write-Log "Selected for uninstall: $((($Keys | ForEach-Object { $Sync.Inventory[$_].DisplayName }) -join ', '))" }
+    Start-Worker $WorkWorker
+}
 
+$lv.Add_ItemCheck({
+    param($s, $e)
+    $li = $lv.Items[$e.Index]
+    $block = $Sync.Busy -or $li.Name -eq 'placeholder'
+    if (-not $block -and $li.Group -eq $grpInstalled) {
+        $entry = $Sync.Inventory[$li.Name]
+        $block = (-not $entry) -or (-not $entry.Removable)
+    }
+    if ($block) { $e.NewValue = $e.CurrentValue }
+})
+$lv.Add_ItemChecked({ Update-Buttons })
+
+$btnClear.Add_Click({ foreach ($li in @($lv.CheckedItems)) { $li.Checked = $false } })
+$btnInstall.Add_Click({ Start-Batch -Ids (Get-CheckedIds) -Keys @() })
+$btnUninstall.Add_Click({ Start-Batch -Ids @() -Keys (Get-CheckedKeys) })
 $btnClose.Add_Click({ $form.Close() })
 
 $form.Add_FormClosing({
@@ -836,26 +801,25 @@ $timer.Add_Tick({
             'Log' {
                 $logBox.SelectionStart  = $logBox.TextLength
                 $logBox.SelectionLength = 0
-                $logBox.SelectionColor  = @{ Info = [System.Drawing.Color]::Black; Warning = [System.Drawing.Color]::DarkOrange; Error = [System.Drawing.Color]::Red }[$msg.Severity]
+                $logBox.SelectionColor  = @{ Info = $C.LogText; Warning = $C.Warn; Error = $C.Bad }[$msg.Severity]
                 $logBox.AppendText($msg.Text + "`r`n")
                 $logBox.ScrollToCaret()
             }
-            'Item'      { Set-ItemRow $msg }
-            'RemoveRow' { Set-RemoveRowStatus $msg }
-            'Inventory' { Update-RemoveList; Update-Buttons }
-            'Progress'  { $progress.Value = [Math]::Min(100, $msg.Value); $lblStatus.Text = $msg.Text }
+            'Item'         { Set-ItemRow $msg }
+            'InstalledRow' { Set-InstalledRowStatus $msg }
+            'Inventory'    { Update-InstalledRows; Update-Buttons }
+            'Progress'     { $progress.Value = [Math]::Min(100, $msg.Value); $lblStatus.Text = $msg.Text }
             'LoadDone' {
                 $Sync.Busy = $false
                 $progress.Style = 'Continuous'; $progress.Value = 0
-                $lblStatus.Text = 'Ready. Check packages to install or remove, then click Apply selected.'
+                $lblStatus.Text = 'Ready.'
                 Update-Buttons
             }
-            'ApplyDone' {
+            'WorkDone' {
                 foreach ($k in $Sync.Results.Keys) { $script:AllResults[$k] = $Sync.Results[$k] }
                 $Sync.Selected = $null
                 $Sync.Busy = $false
-                foreach ($li in @($lvInstall.CheckedItems)) { $li.Checked = $false }
-                foreach ($li in @($lvRemove.CheckedItems))  { $li.Checked = $false }
+                foreach ($li in @($lv.CheckedItems)) { $li.Checked = $false }
                 foreach ($item in $Sync.Items.Values) { Set-ItemRow @{ Id = $item.Id; Status = $item.Status } }
                 $btnClose.Enabled = $true
                 Update-Buttons
@@ -863,9 +827,8 @@ $timer.Add_Tick({
                 $summary = ($Sync.Results.GetEnumerator() | ForEach-Object {
                     $kind = if ($_.Key -like 'remove:*') { 'Remove' } else { 'Install' }
                     '  {0}: {1}' -f $Sync.Labels[$_.Key], (Get-FriendlyResult $_.Value $kind) }) -join "`r`n"
-                Write-Log "Batch finished (exit code $code). Rescanning installed .NET versions..."
+                Write-Log "Batch finished (exit code $code)."
                 $lblStatus.Text = 'Finished.'
-                Start-Worker $RescanWorker
                 $icon = 'Information'; $extra = ''
                 if ($code -eq 1603) { $icon = 'Error'; $extra = "`r`n`r`nLog: $($Sync.LogFile)" }
                 if ($code -eq 3010) { $icon = 'Warning'; $extra = "`r`n`r`nA restart is required to complete the operation." }
