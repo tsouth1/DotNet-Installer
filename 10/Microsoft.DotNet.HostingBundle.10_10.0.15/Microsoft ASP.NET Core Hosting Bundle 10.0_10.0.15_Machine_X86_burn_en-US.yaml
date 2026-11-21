@@ -1,0 +1,94 @@
+PackageIdentifier: Microsoft.DotNet.HostingBundle.10
+PackageVersion: 10.0.15
+Moniker: dotnet-hosting-10
+Tags:
+- .NET
+- .NET Core
+- dotnet
+- net
+- C#
+- csharp
+- F#
+- fsharp
+- VB
+- Visual Basic
+- ASP.NET Core
+- ASP.NET
+- web
+- hosting
+- hosting bundle
+- IIS
+PackageLocale: en-US
+ShortDescription: .NET is a free, cross-platform, open-source developer platform for
+  building many different types of applications.
+License: MIT
+PackageName: Microsoft ASP.NET Core Hosting Bundle 10.0
+PackageUrl: https://dotnet.microsoft.com
+Publisher: Microsoft Corporation
+Installers:
+- Architecture: x86
+  InstallerType: burn
+  InstallerSha256: 9a901e4d1d4373d28e6ac173bed8f3a723c3c4cba169a6c560525518bf981753
+  InstallerUrl: https://download.microsoft.com/download/445001a5-c37d-4837-9fb6-5a0446f9c327/e16d0c14-a6fa-444c-be70-1715de328ba3/dotnet-hosting-10.0.15-win.exe
+  Scope: machine
+  InstallerAbortsTerminal: false
+  InstallLocationRequired: false
+  RequireExplicitUpgrade: false
+  DisplayInstallWarnings: false
+  DownloadCommandProhibited: false
+  ArchiveBinariesDependOnPath: false
+  MinimumOSVersion: 6.1.7601
+  ProductCode: '{2A5072C3-8EA3-4CC6-A4EF-CD1E18AE23F3}'
+  UpgradeBehavior: install
+  AppsAndFeaturesEntries:
+  - DisplayName: Microsoft .NET 10.0.15 - Windows Server Hosting
+    DisplayVersion: 10.0.15.26529
+    ProductCode: '{2A5072C3-8EA3-4CC6-A4EF-CD1E18AE23F3}'
+    Publisher: Microsoft Corporation
+  ExpectedReturnCodes:
+  - InstallerReturnCode: 87
+    ReturnResponse: invalidParameter
+  - InstallerReturnCode: 112
+    ReturnResponse: diskFull
+  - InstallerReturnCode: 1601
+    ReturnResponse: contactSupport
+  - InstallerReturnCode: 1602
+    ReturnResponse: cancelledByUser
+  - InstallerReturnCode: 1618
+    ReturnResponse: installInProgress
+  - InstallerReturnCode: 1623
+    ReturnResponse: systemNotSupported
+  - InstallerReturnCode: 1625
+    ReturnResponse: blockedByPolicy
+  - InstallerReturnCode: 1628
+    ReturnResponse: invalidParameter
+  - InstallerReturnCode: 1633
+    ReturnResponse: systemNotSupported
+  - InstallerReturnCode: 1638
+    ReturnResponse: alreadyInstalled
+  - InstallerReturnCode: 1639
+    ReturnResponse: invalidParameter
+  - InstallerReturnCode: 1640
+    ReturnResponse: blockedByPolicy
+  - InstallerReturnCode: 1641
+    ReturnResponse: rebootInitiated
+  - InstallerReturnCode: 1643
+    ReturnResponse: blockedByPolicy
+  - InstallerReturnCode: 1644
+    ReturnResponse: blockedByPolicy
+  - InstallerReturnCode: 1649
+    ReturnResponse: blockedByPolicy
+  - InstallerReturnCode: 1650
+    ReturnResponse: invalidParameter
+  - InstallerReturnCode: 1654
+    ReturnResponse: systemNotSupported
+  - InstallerReturnCode: 3010
+    ReturnResponse: rebootRequiredToFinish
+  InstallerSwitches:
+    Custom: /norestart
+    Silent: /quiet
+    SilentWithProgress: /passive
+    Log: /log "<LOGPATH>"
+    InstallLocation: TARGETDIR="<INSTALLPATH>"
+ManifestVersion: 1.12.0
+ManifestType: merged

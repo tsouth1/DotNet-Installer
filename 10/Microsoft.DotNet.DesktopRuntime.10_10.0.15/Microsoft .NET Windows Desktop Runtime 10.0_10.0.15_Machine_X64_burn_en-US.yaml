@@ -1,0 +1,91 @@
+PackageIdentifier: Microsoft.DotNet.DesktopRuntime.10
+PackageVersion: 10.0.15
+Moniker: dotnet-desktop-10
+Tags:
+- .NET
+- .NET Core
+- dotnet
+- net
+- C#
+- csharp
+- F#
+- fsharp
+- VB
+- Visual Basic
+- Windows Desktop
+- Windows
+- runtime
+PackageLocale: en-US
+ShortDescription: .NET is a free, cross-platform, open-source developer platform for
+  building many different types of applications.
+License: MIT
+PackageName: Microsoft .NET Windows Desktop Runtime 10.0
+PackageUrl: https://dotnet.microsoft.com
+Publisher: Microsoft Corporation
+Installers:
+- Architecture: x64
+  InstallerType: burn
+  InstallerSha256: e61b030c1673edfa3c0844502eff83198c46af9e7df70dfc6e2efc5b11ea513a
+  InstallerUrl: https://download.microsoft.com/download/b477fae7-19d5-41a2-ba11-105d9bab54f8/276d0de6-d558-4859-a3fe-65103e17a1ec/windowsdesktop-runtime-10.0.15-win-x64.exe
+  Scope: machine
+  InstallerAbortsTerminal: false
+  InstallLocationRequired: false
+  RequireExplicitUpgrade: false
+  DisplayInstallWarnings: false
+  DownloadCommandProhibited: false
+  ArchiveBinariesDependOnPath: false
+  MinimumOSVersion: 6.1.7601
+  ProductCode: '{B198B6E8-FF66-4131-ACFF-BEAEAF82FF84}'
+  UpgradeBehavior: install
+  AppsAndFeaturesEntries:
+  - DisplayName: Microsoft Windows Desktop Runtime 10.0.15 (x64)
+    DisplayVersion: 10.0.15.50000
+    ProductCode: '{B198B6E8-FF66-4131-ACFF-BEAEAF82FF84}'
+    Publisher: Microsoft Corporation
+  ExpectedReturnCodes:
+  - InstallerReturnCode: 87
+    ReturnResponse: invalidParameter
+  - InstallerReturnCode: 112
+    ReturnResponse: diskFull
+  - InstallerReturnCode: 1601
+    ReturnResponse: contactSupport
+  - InstallerReturnCode: 1602
+    ReturnResponse: cancelledByUser
+  - InstallerReturnCode: 1618
+    ReturnResponse: installInProgress
+  - InstallerReturnCode: 1623
+    ReturnResponse: systemNotSupported
+  - InstallerReturnCode: 1625
+    ReturnResponse: blockedByPolicy
+  - InstallerReturnCode: 1628
+    ReturnResponse: invalidParameter
+  - InstallerReturnCode: 1633
+    ReturnResponse: systemNotSupported
+  - InstallerReturnCode: 1638
+    ReturnResponse: alreadyInstalled
+  - InstallerReturnCode: 1639
+    ReturnResponse: invalidParameter
+  - InstallerReturnCode: 1640
+    ReturnResponse: blockedByPolicy
+  - InstallerReturnCode: 1641
+    ReturnResponse: rebootInitiated
+  - InstallerReturnCode: 1643
+    ReturnResponse: blockedByPolicy
+  - InstallerReturnCode: 1644
+    ReturnResponse: blockedByPolicy
+  - InstallerReturnCode: 1649
+    ReturnResponse: blockedByPolicy
+  - InstallerReturnCode: 1650
+    ReturnResponse: invalidParameter
+  - InstallerReturnCode: 1654
+    ReturnResponse: systemNotSupported
+  - InstallerReturnCode: 3010
+    ReturnResponse: rebootRequiredToFinish
+  InstallerSwitches:
+    Custom: /norestart
+    Silent: /quiet
+    SilentWithProgress: /passive
+    Log: /log "<LOGPATH>"
+    InstallLocation: TARGETDIR="<INSTALLPATH>"
+ManifestVersion: 1.12.0
+ManifestType: merged
