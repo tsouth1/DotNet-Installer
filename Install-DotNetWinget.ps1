@@ -33,6 +33,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# "powershell.exe -File" passes "-PackageId A,B" as one string: split on commas / semicolons / spaces.
+$PackageId = @($PackageId -split '[,;\s]+' | Where-Object { $_ })
+
 #region ---------------- Configuration ----------------
 $Majors   = @('10', '9', '8', '6')                  # display order (newest first)
 $Products = [ordered]@{                             # winget ID segment = display name

@@ -14,6 +14,8 @@ A PowerShell GUI that installs or upgrades Microsoft .NET 6, 8, 9 and 10 package
 | `Detect-DotNet10Winget.ps1` | Detection script for the .NET 10 edition. |
 | `Install-DotNet11Winget.ps1` | **.NET 11 edition.** Installs, upgrades and uninstalls .NET 11 only. |
 | `Detect-DotNet11Winget.ps1` | Detection script for the .NET 11 edition. |
+| `10/Install-DotNet10Offline.ps1` | **.NET 10 offline edition.** Installs .NET 10 from local `.exe` installers (no winget), with GUI and headless modes. See [.NET 10 offline installer](#net-10-offline-installer-no-winget). |
+| `10/Detect-DotNet10Offline.ps1` | Detection script for the GUI deployment of the offline edition. |
 
 ## Supported packages
 
@@ -156,6 +158,89 @@ powershell.exe -ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -File .\In
 
 Each edition writes its own log (`DotNet10WingetInstaller.log` / `DotNet11WingetInstaller.log`) and its own detection marker (`HKLM\SOFTWARE\DotNetWingetInstaller\NET10` / `NET11`). Use the matching `Detect-DotNet10Winget.ps1` / `Detect-DotNet11Winget.ps1` as the ConfigMgr detection script. The exit codes are the same as in the original script.
 
+## .NET 10 offline installer (no winget)
+
+`10/Install-DotNet10Offline.ps1` installs .NET 10 from `.exe` installer files stored next to the script, instead of downloading them with winget. It uses the same single-list GUI, colours and uninstall feature as the winget .NET 10 edition.
+
+![.NET 10 offline installer](docs/gui-net10-offline.png)
+
+*This screenshot is from a test setup. The Runtime installer was present and passed its hash check. The Desktop Runtime `.exe` was replaced with a dummy file, which was blocked by the hash check. The other three installers were not staged.*
+
+### Folder layout
+
+There is one subfolder per package, named `<PackageIdentifier>_<Version>`. Each subfolder holds the package's winget YAML manifest and its installer:
+
+```
+10\
+  Install-DotNet10Offline.ps1
+  Detect-DotNet10Offline.ps1
+  Microsoft.DotNet.Runtime.10_10.0.15\
+    Microsoft .NET Runtime 10.0_10.0.15_Machine_X64_burn_en-US.yaml
+    Microsoft .NET Runtime 10.0_10.0.15_Machine_X64_burn_en-US.exe
+  Microsoft.DotNet.DesktopRuntime.10_10.0.15\
+  Microsoft.DotNet.AspNetCore.10_10.0.15\
+  Microsoft.DotNet.HostingBundle.10_10.0.15\
+  Microsoft.DotNet.SDK.10_10.0.404\
+```
+
+- **Installers are not stored in git.** `*.exe` is listed in `.gitignore`, because the SDK installer is larger than GitHub's 100 MB file limit. Copy the installers into each folder of your ConfigMgr content source. The download URL for each one is the `InstallerUrl` in its YAML.
+- **How the script picks the `.exe`:** It uses the file with the same name as the YAML. If there is no such file, it uses the only `.exe` in the folder. If there are several, it uses the one whose hash matches the YAML.
+- **What the script reads from the YAML:** the package version, architecture, `InstallerSha256`, `ProductCode`, installer switches (`/quiet`, `/norestart`, `/log`) and the meaning of each return code (for logging).
+- **To update to a new patch,** replace the folder (and its YAML and `.exe`) with the new version. If there are several folders for the same package, the script uses the one with the newest version.
+
+### Hash verification
+
+Before an installer runs, its SHA256 is compared with `InstallerSha256` from the YAML. The check runs when the GUI loads and again just before each install. An installer that doesn't match shows **Hash mismatch - blocked** and is not run. `-SkipHashCheck` overrides this, but it's not recommended.
+
+Each install runs as:
+
+```
+"<installer>.exe" /install /quiet /norestart /log "<LogDir>\install_<Package>_<Version>_<timestamp>.log"
+```
+
+Exit codes `0` (success), `3010`/`1641` (reboot required) and `1638` (already installed) count as success.
+
+### GUI
+
+The **Install .NET 10** group lists the five packages, each with the installer version, the installed version and a status:
+
+| Status | Meaning |
+| --- | --- |
+| Installed (this version) | The installer's `ProductCode` is already registered. |
+| Update available / Newer version installed / Installed | Compares the installer's version with the highest installed version of that product. |
+| Not installed | No version of that product is installed. |
+| Installer .exe missing | The folder has no installer, so the row can't be checked. |
+| Hash mismatch - blocked | The installer's hash doesn't match the YAML, so the row can't be checked. |
+
+The **Installed .NET 10 on this device** group and the **Uninstall** button work the same way as in the winget .NET 10 edition.
+
+### Headless mode (one ConfigMgr deployment type per package)
+
+| Parameter | Description |
+| --- | --- |
+| `-Install <names>` | Install the named packages. |
+| `-Uninstall <names>` | Uninstall every standalone .NET 10 installation of the named products: all patch versions and architectures. Entries managed by Visual Studio are skipped. |
+| `-SkipHashCheck` | Run installers even when their hash doesn't match the YAML. |
+| `-SourcePath <folder>` | Read installers from another folder. Default: the script's own folder. |
+
+Package names are `Runtime`, `DesktopRuntime`, `AspNetCore`, `HostingBundle`, `SDK` and `All`. Separate several names with commas. Commas work with `powershell.exe -File`. When both parameters are given, uninstalls run first.
+
+```powershell
+# ConfigMgr deployment type "Runtime 10"
+#   Install program:
+powershell.exe -ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -File .\Install-DotNet10Offline.ps1 -Install Runtime
+#   Uninstall program:
+powershell.exe -ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -File .\Install-DotNet10Offline.ps1 -Uninstall Runtime
+
+# Several packages at once
+powershell.exe -ExecutionPolicy Bypass -NoProfile -File .\Install-DotNet10Offline.ps1 -Install Runtime,DesktopRuntime,AspNetCore
+```
+
+**Detection for per-package deployment types:** Use a registry detection rule that checks whether the package's `ProductCode` key (from its YAML) exists. The installers are 32-bit bundles, so the key is under `HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\<ProductCode>`. For example, the Runtime 10.0.15 key is `{E3860B64-C6F7-43B8-8809-CEE4AE78D57D}`.
+
+**Detection for the GUI deployment:** Use `10/Detect-DotNet10Offline.ps1`. It reads the marker that the script writes to `HKLM\SOFTWARE\DotNetOfflineInstaller\NET10`.
+
+The log is `DotNet10OfflineInstaller.log`, in the same log folder as the other scripts. The exit codes are the same as in the other scripts. `1` also means invalid package names or that no installer folders were found.
 ## Requirements
 
 - Windows 10/11 with **App Installer (winget)** provisioned for the device.

@@ -45,6 +45,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# "powershell.exe -File" passes "-PackageId A,B" as one string: split on commas / semicolons / spaces.
+$PackageId = @($PackageId -split '[,;\s]+' | Where-Object { $_ })
+
 #region ---------------- Configuration ----------------
 $TargetMajor = '11'                                  # the only .NET major version this script installs and lists
 $Products    = [ordered]@{                           # winget ID segment = display name
@@ -613,7 +616,8 @@ function Update-Buttons {
 }
 
 function Get-StatusColor([string]$Status) {
-    switch -Wildcard ($Status) {
+    # first matching pattern wins (switch -Wildcard would otherwise return every match)
+    @(switch -Wildcard ($Status) {
         'Up to date'          { $C.Ok }
         'Already*'            { $C.Ok }
         'Installed (preview*' { $C.Warn }
@@ -625,7 +629,7 @@ function Get-StatusColor([string]$Status) {
         'Installing*'         { $C.Busy }
         'Uninstalling*'       { $C.Busy }
         default               { $C.PaneText }
-    }
+    })[0]
 }
 
 function Set-ItemRow {
